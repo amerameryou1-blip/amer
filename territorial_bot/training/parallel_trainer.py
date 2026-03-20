@@ -70,7 +70,7 @@ def worker_process_main(
     browser_manager = BrowserManager(worker_config, logger=logger)
     page = browser_manager.launch()
     game_controller = GameController(page, worker_config, logger=logger)
-    game_launcher = GameLauncher(browser_manager, worker_config, logger=logger)
+    game_launcher = GameLauncher(page, worker_config, logger=logger)
     map_parser = MapParser(worker_config, logger=logger)
     reward_calculator = RewardCalculator(worker_config["rewards"], logger=logger)
     episode_logger = EpisodeLogger(worker_config, worker_id=worker_id, write_lock=csv_lock, logger=logger)
@@ -107,6 +107,8 @@ def worker_process_main(
                 break
 
             stats = trainer.run_episode()
+            if not stats:
+                continue
             reward_window.append(stats["total_reward"])
             reward_window = reward_window[-20:]
             avg_reward = sum(reward_window) / max(len(reward_window), 1)

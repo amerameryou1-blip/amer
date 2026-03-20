@@ -28,6 +28,7 @@ REQUIRED_CONFIG_SCHEMA = {
         "restart_on_death": bool,
         "window_width": int,
         "window_height": int,
+        "multiplayer_mode": bool,
     },
     "vision": {
         "map_region": list,
@@ -35,6 +36,13 @@ REQUIRED_CONFIG_SCHEMA = {
         "color_tolerance": int,
         "min_territory_pixels": int,
         "use_grayscale_fallback": bool,
+        "process_width": int,
+        "process_height": int,
+        "playable_area": list,
+        "troop_bar_sample_pixel": list,
+        "defeat_check_region": list,
+        "leaderboard_region": list,
+        "stats_region": list,
     },
     "agent": {
         "learning_rate": float,
@@ -48,10 +56,14 @@ REQUIRED_CONFIG_SCHEMA = {
         "q_table_path": str,
     },
     "actions": {
-        "move_directions": list,
-        "click_grid_size": int,
+        "grid_size": int,
+        "directional_offset_px": int,
         "hold_duration_ms": int,
         "action_delay_ms": int,
+        "playable_x_start": int,
+        "playable_x_end": int,
+        "playable_y_start": int,
+        "playable_y_end": int,
     },
     "training": {
         "num_workers": int,
@@ -71,13 +83,19 @@ REQUIRED_CONFIG_SCHEMA = {
         "idle_penalty": float,
         "attacking_enemy_bonus": float,
         "neutral_capture_reward": float,
+        "top_half_leaderboard_bonus": float,
+    },
+    "debug": {
+        "save_screenshots": bool,
+        "screenshot_every_n_steps": int,
+        "verbose_logging": bool,
     },
 }
 
 
 def _validate_schema(config: dict[str, Any], schema: dict[str, Any], prefix: str = "") -> None:
     """
-    Recursively validate required configuration fields and lightweight types.
+    Recursively validate required configuration fields and their basic types.
 
     Args:
         config (dict[str, Any]): Parsed configuration dictionary.
@@ -85,7 +103,7 @@ def _validate_schema(config: dict[str, Any], schema: dict[str, Any], prefix: str
         prefix (str): Dot-separated path prefix for nested fields.
 
     Raises:
-        ConfigError: If a required field is missing or its type is invalid.
+        ConfigError: If a required field is missing or has the wrong type.
     """
 
     for key, expected in schema.items():
@@ -102,29 +120,34 @@ def _validate_schema(config: dict[str, Any], schema: dict[str, Any], prefix: str
 
         if expected is float and (not isinstance(value, (float, int)) or isinstance(value, bool)):
             raise ConfigError(f"Config field '{full_key}' must be a number")
-        elif expected is int and (not isinstance(value, int) or isinstance(value, bool)):
+        if expected is int and (not isinstance(value, int) or isinstance(value, bool)):
             raise ConfigError(f"Config field '{full_key}' must be an integer")
-        elif expected is bool and not isinstance(value, bool):
+        if expected is bool and not isinstance(value, bool):
             raise ConfigError(f"Config field '{full_key}' must be a boolean")
-        elif expected is str and not isinstance(value, str):
+        if expected is str and not isinstance(value, str):
             raise ConfigError(f"Config field '{full_key}' must be a string")
-        elif expected is list and not isinstance(value, list):
+        if expected is list and not isinstance(value, list):
             raise ConfigError(f"Config field '{full_key}' must be a list")
 
-    map_region = config["vision"]["map_region"]
-    if len(map_region) != 4:
-        raise ConfigError("Config field 'vision.map_region' must contain [x, y, width, height]")
+    list_fields = {
+        "vision.map_region": 4,
+        "vision.playable_area": 4,
+        "vision.troop_bar_sample_pixel": 2,
+        "vision.defeat_check_region": 4,
+        "vision.leaderboard_region": 4,
+        "vision.stats_region": 4,
+    }
+    for field_name, expected_length in list_fields.items():
+        section, field = field_name.split(".", 1)
+        values = config[section][field]
+        if len(values) != expected_length:
+            raise ConfigError(f"Config field '{field_name}' must have length {expected_length}")
 
     if config["agent"]["epsilon_decay_strategy"] not in {"exponential", "linear"}:
-        raise ConfigError(
-            "Config field 'agent.epsilon_decay_strategy' must be 'exponential' or 'linear'"
-        )
+        raise ConfigError("Config field 'agent.epsilon_decay_strategy' must be 'exponential' or 'linear'")
 
-    if len(config["actions"]["move_directions"]) != 8:
-        raise ConfigError("Config field 'actions.move_directions' must define exactly 8 directions")
-
-    if config["actions"]["click_grid_size"] <= 0:
-        raise ConfigError("Config field 'actions.click_grid_size' must be greater than 0")
+    if config["actions"]["grid_size"] <= 0:
+        raise ConfigError("Config field 'actions.grid_size' must be greater than 0")
 
     if config["agent"]["state_bins"] <= 0:
         raise ConfigError("Config field 'agent.state_bins' must be greater than 0")
@@ -132,7 +155,7 @@ def _validate_schema(config: dict[str, Any], schema: dict[str, Any], prefix: str
 
 def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     """
-    Load and validate the project configuration JSON file.
+    Load and validate the project configuration file.
 
     Args:
         config_path (str | Path | None): Optional path to a config file.
@@ -141,11 +164,10 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
         dict[str, Any]: Validated configuration dictionary.
 
     Raises:
-        ConfigError: If the file cannot be read, parsed, or validated.
+        ConfigError: If reading, parsing, or validation fails.
     """
 
     resolved_path = Path(config_path) if config_path else Path(__file__).resolve().parent / "config.json"
-
     if not resolved_path.exists():
         raise ConfigError(f"Config file not found: {resolved_path}")
 

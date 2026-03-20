@@ -1,11 +1,12 @@
 """
-Command-line entry point for training, evaluation, and watch modes.
+CLI entry point for Territorial.io training, evaluation, and vision debugging.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import logging
 import signal
 import sys
@@ -34,7 +35,7 @@ ACTIVE_RUNTIME: Any | None = None
 
 def _signal_handler(signum: int, frame: Any) -> None:
     """
-    Handle SIGINT and SIGTERM by saving state before stopping the process.
+    Save state and stop cleanly on process signals.
 
     Args:
         signum (int): Signal number.
@@ -52,14 +53,14 @@ def _signal_handler(signum: int, frame: Any) -> None:
 
 def _resolve_runtime_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     """
-    Resolve relative log and checkpoint paths against the project directory.
+    Resolve runtime paths against the project directory.
 
     Args:
-        config (dict[str, Any]): Loaded configuration dictionary.
+        config (dict[str, Any]): Configuration dictionary.
         base_dir (Path): Project root directory.
 
     Returns:
-        dict[str, Any]: Path-normalized configuration dictionary.
+        dict[str, Any]: Configuration dictionary with resolved filesystem paths.
     """
 
     resolved = copy.deepcopy(config)
@@ -84,6 +85,33 @@ def _resolve_runtime_paths(config: dict[str, Any], base_dir: Path) -> dict[str, 
     return resolved
 
 
+def _read_resume_episode(log_dir: str | Path) -> int:
+    """
+    Read the last completed episode number from `episodes.csv` when present.
+
+    Args:
+        log_dir (str | Path): Log directory.
+
+    Returns:
+        int: Last completed episode number, or 0 if unavailable.
+    """
+
+    csv_path = Path(log_dir) / "episodes.csv"
+    if not csv_path.exists():
+        return 0
+
+    last_episode = 0
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if row.get("episode"):
+                    last_episode = max(last_episode, int(float(row["episode"])))
+    except Exception:
+        return 0
+    return last_episode
+
+
 def _build_single_trainer(
     config: dict[str, Any],
     worker_id: int = 0,
@@ -92,17 +120,17 @@ def _build_single_trainer(
     load_checkpoint: bool = True,
 ) -> tuple[Trainer, logging.Logger, bool]:
     """
-    Build a fully wired single-worker trainer instance.
+    Construct a fully wired single-worker trainer.
 
     Args:
-        config (dict[str, Any]): Runtime configuration dictionary.
+        config (dict[str, Any]): Runtime configuration.
         worker_id (int): Worker identifier.
-        training_enabled (bool): Whether this trainer should update Q-values.
+        training_enabled (bool): Whether training updates should be applied.
         logger_name (str): Logger namespace.
-        load_checkpoint (bool): Whether to try loading the primary checkpoint.
+        load_checkpoint (bool): Whether to load the primary Q-table checkpoint.
 
     Returns:
-        tuple[Trainer, logging.Logger, bool]: Trainer, shared logger, and checkpoint-loaded flag.
+        tuple[Trainer, logging.Logger, bool]: Trainer instance, logger, and checkpoint-loaded flag.
     """
 
     logger = setup_logger(logger_name, config["training"]["log_dir"])
@@ -114,10 +142,11 @@ def _build_single_trainer(
         checkpoint_loaded = q_table.load(config["agent"]["q_table_path"])
 
     agent = QAgent(config, q_table, action_space, logger=logger)
+    agent.episode_count = _read_resume_episode(config["training"]["log_dir"])
     browser_manager = BrowserManager(config, logger=logger)
     page = browser_manager.launch()
     game_controller = GameController(page, config, logger=logger)
-    game_launcher = GameLauncher(browser_manager, config, logger=logger)
+    game_launcher = GameLauncher(page, config, logger=logger)
     map_parser = MapParser(config, logger=logger)
     reward_calculator = RewardCalculator(config["rewards"], logger=logger)
     episode_logger = EpisodeLogger(config, worker_id=worker_id, logger=logger)
@@ -140,13 +169,13 @@ def _build_single_trainer(
 
 def reset_qtable(config_path: str | Path | None = None) -> bool:
     """
-    Delete the primary merged Q-table checkpoint and exit.
+    Delete stored Q-table checkpoints.
 
     Args:
-        config_path (str | Path | None): Optional config file path.
+        config_path (str | Path | None): Optional config path.
 
     Returns:
-        bool: True when a checkpoint file was removed.
+        bool: True when at least one checkpoint was deleted.
     """
 
     project_root = Path(__file__).resolve().parent
@@ -155,14 +184,13 @@ def reset_qtable(config_path: str | Path | None = None) -> bool:
     q_table_path = Path(config["agent"]["q_table_path"])
     checkpoint_dir = Path(config["training"]["checkpoint_dir"])
     removed_paths: list[Path] = []
+
     if q_table_path.exists():
         q_table_path.unlink()
         removed_paths.append(q_table_path)
-
     for checkpoint in checkpoint_dir.glob("*.pkl"):
-        if checkpoint.exists():
-            checkpoint.unlink()
-            removed_paths.append(checkpoint)
+        checkpoint.unlink()
+        removed_paths.append(checkpoint)
 
     if not removed_paths:
         logger.info("No Q-table checkpoints found in %s", checkpoint_dir)
@@ -174,15 +202,15 @@ def reset_qtable(config_path: str | Path | None = None) -> bool:
 
 def run_training(workers: int = 1, episodes: int | None = None, config_path: str | Path | None = None) -> Any:
     """
-    Run training in either single-worker or parallel mode.
+    Run Territorial.io training.
 
     Args:
-        workers (int): Number of training workers.
+        workers (int): Number of workers.
         episodes (int | None): Optional episode count override.
-        config_path (str | Path | None): Optional config file path.
+        config_path (str | Path | None): Optional config path.
 
     Returns:
-        Any: Training results summary.
+        Any: Training results.
     """
 
     global ACTIVE_RUNTIME
@@ -196,6 +224,7 @@ def run_training(workers: int = 1, episodes: int | None = None, config_path: str
         parallel_trainer = ParallelTrainer(config, logger=logger)
         ACTIVE_RUNTIME = parallel_trainer
         try:
+            logger.info("Parallel training start | workers=%s | episodes=%s", workers, total_episodes)
             parallel_trainer.start(workers, total_episodes=total_episodes)
             parallel_trainer.monitor()
             return {"mode": "train", "workers": workers, "episodes": total_episodes}
@@ -210,7 +239,12 @@ def run_training(workers: int = 1, episodes: int | None = None, config_path: str
         load_checkpoint=config["training"]["resume_training"],
     )
     ACTIVE_RUNTIME = trainer
-    logger.info("Single-worker training started | episodes=%s | checkpoint_loaded=%s", total_episodes, checkpoint_loaded)
+    logger.info(
+        "Single-worker training start | checkpoint_loaded=%s | resume_episode=%s | target_episodes=%s",
+        checkpoint_loaded,
+        trainer.agent.episode_count + 1,
+        total_episodes,
+    )
     try:
         stats = trainer.run(total_episodes)
         trainer.save_q_table()
@@ -226,15 +260,15 @@ def run_evaluation(
     headed: bool = False,
 ) -> list[dict[str, Any]]:
     """
-    Run evaluation episodes without updating the Q-table.
+    Run evaluation episodes without Q-table updates.
 
     Args:
-        episodes (int): Number of evaluation episodes to run.
-        config_path (str | Path | None): Optional config file path.
-        headed (bool): Whether to force a visible browser window.
+        episodes (int): Number of episodes.
+        config_path (str | Path | None): Optional config path.
+        headed (bool): Whether to force a visible browser.
 
     Returns:
-        list[dict[str, Any]]: Episode summaries from evaluation.
+        list[dict[str, Any]]: Evaluation episode summaries.
     """
 
     global ACTIVE_RUNTIME
@@ -251,16 +285,13 @@ def run_evaluation(
         load_checkpoint=True,
     )
     ACTIVE_RUNTIME = trainer
-
-    if checkpoint_loaded:
-        trainer.agent.epsilon = 0.0
-    else:
-        logger.warning("No checkpoint loaded for evaluation; falling back to exploratory policy")
-        trainer.agent.epsilon = 1.0
+    trainer.agent.epsilon = 0.0 if checkpoint_loaded else 1.0
+    if not checkpoint_loaded:
+        logger.warning("No checkpoint found for evaluation; using exploratory policy")
 
     try:
         stats = trainer.run(episodes)
-        wins = sum(1 for item in stats if item["won"])
+        wins = sum(1 for item in stats if item.get("won"))
         avg_reward = sum(item["total_reward"] for item in stats) / max(len(stats), 1)
         avg_ratio = sum(item["final_territory_ratio"] for item in stats) / max(len(stats), 1)
         logger.info(
@@ -277,26 +308,68 @@ def run_evaluation(
         ACTIVE_RUNTIME = None
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def run_debug_vision(config_path: str | Path | None = None) -> list[dict[str, Any]]:
     """
-    Build the command-line argument parser.
+    Run a single headed debug episode that saves overlay frames every 10 steps.
+
+    Args:
+        config_path (str | Path | None): Optional config path.
 
     Returns:
-        argparse.ArgumentParser: Configured argument parser.
+        list[dict[str, Any]]: One-item debug run result list.
     """
 
-    parser = argparse.ArgumentParser(description="Territorial.io Q-learning bot")
+    global ACTIVE_RUNTIME
+
+    project_root = Path(__file__).resolve().parent
+    config = _resolve_runtime_paths(load_config(config_path), project_root)
+    config["game"]["headless"] = False
+    config["debug"]["save_screenshots"] = True
+    config["debug"]["screenshot_every_n_steps"] = 10
+    config["debug"]["verbose_logging"] = True
+
+    trainer, logger, _ = _build_single_trainer(
+        config,
+        training_enabled=False,
+        logger_name="debug_vision",
+        load_checkpoint=False,
+    )
+    ACTIVE_RUNTIME = trainer
+    trainer.agent.epsilon = 1.0
+    logger.info("Vision debug run start | headed=%s | debug_frames_every=%s", True, 10)
+    try:
+        stats = trainer.run(1)
+        return stats
+    finally:
+        trainer.browser_manager.close()
+        ACTIVE_RUNTIME = None
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """
+    Build the CLI argument parser.
+
+    Returns:
+        argparse.ArgumentParser: Configured parser.
+    """
+
+    parser = argparse.ArgumentParser(description="Territorial.io screenshot-grounded Q-learning bot")
     parser.add_argument("--mode", choices=["train", "eval", "watch"], default="train")
     parser.add_argument("--workers", type=int, default=None, help="Number of training workers")
     parser.add_argument("--episodes", type=int, default=None, help="Episode override")
     parser.add_argument("--config", type=str, default=None, help="Path to config.json")
     parser.add_argument("--reset-qtable", action="store_true", help="Delete the saved Q-table and exit")
+    parser.add_argument(
+        "--debug-vision",
+        action="store_true",
+        help="Run one headed episode, save overlay frames every 10 steps, and exit",
+    )
     return parser
 
 
 def main() -> int:
     """
-    Parse CLI arguments and run the requested Territorial.io workflow.
+    Parse arguments and run the requested workflow.
 
     Returns:
         int: Process exit code.
@@ -317,6 +390,10 @@ def main() -> int:
 
         if args.reset_qtable:
             reset_qtable(args.config)
+            return 0
+
+        if args.debug_vision:
+            run_debug_vision(args.config)
             return 0
 
         if args.mode == "train":
