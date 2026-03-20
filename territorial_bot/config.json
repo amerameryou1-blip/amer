@@ -1,0 +1,72 @@
+{
+  "game": {
+    "url": "https://territorial.io",
+    "player_name": "QLearnerBot",
+    "headless": true,
+    "browser_timeout_ms": 30000,
+    "game_start_wait_s": 5,
+    "screenshot_interval_ms": 500,
+    "max_episode_steps": 1000,
+    "max_episodes": 10000,
+    "restart_on_death": true,
+    "window_width": 1280,
+    "window_height": 720
+  },
+  "vision": {
+    "map_region": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "territory_sample_grid": 10,
+    "color_tolerance": 20,
+    "min_territory_pixels": 100,
+    "use_grayscale_fallback": false
+  },
+  "agent": {
+    "learning_rate": 0.1,
+    "discount_factor": 0.95,
+    "epsilon_start": 1.0,
+    "epsilon_min": 0.05,
+    "epsilon_decay": 0.995,
+    "epsilon_decay_strategy": "exponential",
+    "state_bins": 10,
+    "q_table_save_interval": 50,
+    "q_table_path": "checkpoints/q_table.pkl"
+  },
+  "actions": {
+    "move_directions": [
+      "up",
+      "down",
+      "left",
+      "right",
+      "up_left",
+      "up_right",
+      "down_left",
+      "down_right"
+    ],
+    "click_grid_size": 8,
+    "hold_duration_ms": 200,
+    "action_delay_ms": 100
+  },
+  "training": {
+    "num_workers": 1,
+    "worker_sync_interval": 10,
+    "log_dir": "logs/",
+    "checkpoint_dir": "checkpoints/",
+    "resume_training": true,
+    "eval_every_n_episodes": 100,
+    "eval_episodes": 5
+  },
+  "rewards": {
+    "territory_gain_reward": 1.0,
+    "territory_loss_penalty": -1.5,
+    "death_penalty": -10.0,
+    "survival_bonus_per_step": 0.01,
+    "win_bonus": 50.0,
+    "idle_penalty": -0.1,
+    "attacking_enemy_bonus": 2.0,
+    "neutral_capture_reward": 0.5
+  }
+}
