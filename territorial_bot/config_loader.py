@@ -100,9 +100,9 @@ def _validate_schema(config: dict[str, Any], schema: dict[str, Any], prefix: str
             _validate_schema(value, expected, full_key)
             continue
 
-        if expected is float and not isinstance(value, (float, int)):
+        if expected is float and (not isinstance(value, (float, int)) or isinstance(value, bool)):
             raise ConfigError(f"Config field '{full_key}' must be a number")
-        elif expected is int and not isinstance(value, int):
+        elif expected is int and (not isinstance(value, int) or isinstance(value, bool)):
             raise ConfigError(f"Config field '{full_key}' must be an integer")
         elif expected is bool and not isinstance(value, bool):
             raise ConfigError(f"Config field '{full_key}' must be a boolean")

@@ -103,7 +103,7 @@ class QAgent:
             self.epsilon = max(epsilon_min, self.epsilon * decay)
             return
 
-        linear_step = (1.0 - decay) / max(self.config["game"]["max_episodes"], 1)
+        linear_step = max(0.0, 1.0 - decay)
         self.epsilon = max(epsilon_min, self.epsilon - linear_step)
 
     def complete_episode(self, total_reward: float, territory_ratio: float, decay: bool = True) -> None:

@@ -128,6 +128,7 @@ class QTable:
             return False
 
         try:
+            target_action_space_size = self.action_space_size
             table = payload.get("table", {})
             action_space_size = int(payload.get("action_space_size", self.action_space_size))
             state_space_size = int(payload.get("state_space_size", self.state_space_size))
@@ -140,7 +141,7 @@ class QTable:
             }
             self.state_space_size = state_space_size
             self.action_space_size = action_space_size
-            self.resize(self.action_space_size)
+            self.resize(target_action_space_size)
             self.logger.info("Loaded Q-table checkpoint from %s with %s states", path, len(self.table))
             return True
         except Exception as exc:
@@ -169,7 +170,7 @@ class QTable:
 
         mean_value = total_sum / max(total_count, 1)
         return {
-            "total_states_visited": float(len(self.table)),
+            "total_states_visited": len(self.table),
             "mean_q_value": mean_value,
             "max_q_value": max_value,
         }
@@ -190,4 +191,3 @@ class QTable:
             current_values = self.table[state]
             common_size = min(len(current_values), len(other_values))
             current_values[:common_size] = (current_values[:common_size] + other_values[:common_size]) / 2.0
-

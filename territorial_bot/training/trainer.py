@@ -218,7 +218,7 @@ class Trainer:
         }
         self.episode_logger.log_episode(stats)
 
-        if done and self.restart_on_death:
+        if self.restart_on_death and (done or total_steps >= self.game_config["max_episode_steps"]):
             self.browser_manager.restart()
             self._refresh_page_binding()
 

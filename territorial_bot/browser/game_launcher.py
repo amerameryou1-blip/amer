@@ -67,7 +67,7 @@ class GameLauncher:
             "text=/victory/i",
             "text=/winner/i",
             "text=/you won/i",
-            "text=/#1",
+            "text='#1'",
         ]
 
     def _get_page(self) -> Page:

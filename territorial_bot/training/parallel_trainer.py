@@ -31,6 +31,8 @@ def worker_process_main(
     config: dict[str, Any],
     worker_id: int,
     assigned_episodes: int,
+    initial_completed: int,
+    overall_target: int,
     status_dict: Any,
     csv_lock: Any,
     stop_event: Any,
@@ -42,6 +44,8 @@ def worker_process_main(
         config (dict[str, Any]): Project configuration dictionary.
         worker_id (int): Worker identifier.
         assigned_episodes (int): Number of episodes assigned to this worker.
+        initial_completed (int): Completed-episode count carried across restarts.
+        overall_target (int): Total episode target originally assigned to the worker.
         status_dict (Any): Shared status dictionary.
         csv_lock (Any): Shared CSV write lock.
         stop_event (Any): Shared shutdown event.
@@ -90,8 +94,8 @@ def worker_process_main(
 
     status_dict[worker_id] = {
         "pid": os.getpid(),
-        "episodes_completed": 0,
-        "target_episodes": assigned_episodes,
+        "episodes_completed": initial_completed,
+        "target_episodes": overall_target,
         "avg_reward": 0.0,
         "last_reward": 0.0,
         "state": "running",
@@ -106,10 +110,11 @@ def worker_process_main(
             reward_window.append(stats["total_reward"])
             reward_window = reward_window[-20:]
             avg_reward = sum(reward_window) / max(len(reward_window), 1)
+            completed_total = initial_completed + episode_index + 1
             status_dict[worker_id] = {
                 "pid": os.getpid(),
-                "episodes_completed": episode_index + 1,
-                "target_episodes": assigned_episodes,
+                "episodes_completed": completed_total,
+                "target_episodes": overall_target,
                 "avg_reward": avg_reward,
                 "last_reward": stats["total_reward"],
                 "state": "running",
@@ -188,13 +193,14 @@ class ParallelTrainer:
             targets[worker_id] = base + (1 if worker_id < remainder else 0)
         return targets
 
-    def _spawn_worker(self, worker_id: int, assigned_episodes: int) -> None:
+    def _spawn_worker(self, worker_id: int, assigned_episodes: int, initial_completed: int = 0) -> None:
         """
         Spawn a worker process for a specific episode allocation.
 
         Args:
             worker_id (int): Worker identifier.
             assigned_episodes (int): Number of episodes to run.
+            initial_completed (int): Previously completed episodes for this worker.
         """
 
         if assigned_episodes <= 0 or self.status_dict is None or self.csv_lock is None or self.stop_event is None:
@@ -206,6 +212,8 @@ class ParallelTrainer:
                 self.config,
                 worker_id,
                 assigned_episodes,
+                initial_completed,
+                self.worker_targets.get(worker_id, assigned_episodes),
                 self.status_dict,
                 self.csv_lock,
                 self.stop_event,
@@ -269,7 +277,7 @@ class ParallelTrainer:
                 worker_id,
                 remaining,
             )
-            self._spawn_worker(worker_id, remaining)
+            self._spawn_worker(worker_id, remaining, initial_completed=completed)
 
     def _all_workers_finished(self) -> bool:
         """
