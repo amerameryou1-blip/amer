@@ -1,0 +1,104 @@
+{
+  "game": {
+    "url": "https://territorial.io",
+    "player_name": "QLearnerBot",
+    "headless": true,
+    "browser_timeout_ms": 30000,
+    "game_start_wait_s": 5,
+    "screenshot_interval_ms": 600,
+    "max_episode_steps": 800,
+    "max_episodes": 10000,
+    "restart_on_death": true,
+    "window_width": 1366,
+    "window_height": 768,
+    "multiplayer_mode": true
+  },
+  "vision": {
+    "map_region": [
+      0,
+      0,
+      1366,
+      768
+    ],
+    "territory_sample_grid": 10,
+    "color_tolerance": 20,
+    "min_territory_pixels": 50,
+    "use_grayscale_fallback": false,
+    "process_width": 384,
+    "process_height": 216,
+    "playable_area": [
+      310,
+      80,
+      1070,
+      640
+    ],
+    "troop_bar_sample_pixel": [
+      760,
+      748
+    ],
+    "defeat_check_region": [
+      490,
+      595,
+      570,
+      150
+    ],
+    "leaderboard_region": [
+      0,
+      0,
+      310,
+      340
+    ],
+    "stats_region": [
+      1200,
+      0,
+      166,
+      160
+    ]
+  },
+  "agent": {
+    "learning_rate": 0.15,
+    "discount_factor": 0.95,
+    "epsilon_start": 1.0,
+    "epsilon_min": 0.05,
+    "epsilon_decay": 0.997,
+    "epsilon_decay_strategy": "exponential",
+    "state_bins": 10,
+    "q_table_save_interval": 25,
+    "q_table_path": "checkpoints/q_table.pkl"
+  },
+  "actions": {
+    "grid_size": 8,
+    "directional_offset_px": 150,
+    "hold_duration_ms": 200,
+    "action_delay_ms": 120,
+    "playable_x_start": 310,
+    "playable_x_end": 1380,
+    "playable_y_start": 80,
+    "playable_y_end": 720
+  },
+  "training": {
+    "num_workers": 1,
+    "worker_sync_interval": 10,
+    "log_dir": "logs/",
+    "checkpoint_dir": "checkpoints/",
+    "resume_training": true,
+    "eval_every_n_episodes": 100,
+    "eval_episodes": 3
+  },
+  "rewards": {
+    "territory_gain_reward": 2.0,
+    "territory_loss_penalty": -2.0,
+    "death_penalty": -15.0,
+    "survival_bonus_per_step": 0.02,
+    "win_bonus": 100.0,
+    "idle_penalty": -0.2,
+    "attacking_enemy_bonus": 3.0,
+    "neutral_capture_reward": 1.0,
+    "top_half_leaderboard_bonus": 5.0
+  },
+  "debug": {
+    "save_screenshots": false,
+    "screenshot_every_n_steps": 100,
+    "verbose_logging": false
+  }
+}
