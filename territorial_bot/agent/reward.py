@@ -1,5 +1,5 @@
 """
-Reward calculation logic for Territorial.io bot.
+Reward shaping for Territorial.io Q-learning.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from vision.map_parser import MapState
 
 class RewardCalculator:
     """
-    Calculate scalar reinforcement-learning rewards from map-state transitions.
+    Compute reinforcement-learning rewards from successive map states.
     """
 
     def __init__(
@@ -22,7 +22,7 @@ class RewardCalculator:
         logger: logging.Logger | None = None,
     ) -> None:
         """
-        Initialize reward shaping configuration and episode state.
+        Initialize the reward calculator.
 
         Args:
             rewards_config (dict[str, Any]): Reward configuration dictionary.
@@ -31,10 +31,31 @@ class RewardCalculator:
         """
 
         self.rewards_config = rewards_config
-        self.logger = logger or logging.getLogger("reward_calculator")
         self.initial_map_state = initial_map_state
+        self.logger = logger or logging.getLogger("reward_calculator")
         self.idle_steps = 0
         self.episode_total = 0.0
+        self.step_counter = 0
+
+    def leaderboard_rank_reward(self, curr_map_state: MapState) -> float:
+        """
+        Return a bonus reward based on approximate leaderboard strength.
+
+        Args:
+            curr_map_state (MapState): Current parsed map state.
+
+        Returns:
+            float: Leaderboard-rank reward bonus.
+        """
+
+        ratio = curr_map_state.player_territory_ratio
+        if ratio > 0.25:
+            return 10.0
+        if ratio > 0.10:
+            return 5.0
+        if ratio > 0.05:
+            return 2.0
+        return 0.0
 
     def calculate(
         self,
@@ -44,18 +65,19 @@ class RewardCalculator:
         won: bool,
     ) -> float:
         """
-        Calculate reward for a single timestep transition.
+        Calculate the scalar reward for one state transition.
 
         Args:
-            prev_map_state (MapState): Map state before action.
-            curr_map_state (MapState): Map state after action.
-            done (bool): True if episode ended this step.
-            won (bool): True if player won the game.
+            prev_map_state (MapState): Previous map state.
+            curr_map_state (MapState): Current map state.
+            done (bool): True if the episode ended this step.
+            won (bool): True if the player won the episode.
 
         Returns:
-            float: Scalar reward value.
+            float: Reward for the transition.
         """
 
+        self.step_counter += 1
         reward = 0.0
         territory_delta = curr_map_state.player_territory_pixels - prev_map_state.player_territory_pixels
         neutral_delta = prev_map_state.neutral_territory_pixels - curr_map_state.neutral_territory_pixels
@@ -77,7 +99,15 @@ class RewardCalculator:
         if territory_delta > 0 and neutral_delta > 0:
             reward += self.rewards_config["neutral_capture_reward"]
 
-        if self.idle_steps >= 5:
+        if curr_map_state.player_territory_ratio > 0.02:
+            reward += self.rewards_config["top_half_leaderboard_bonus"]
+
+        if self.step_counter % 10 == 0:
+            reward += self.leaderboard_rank_reward(curr_map_state)
+
+        if self.idle_steps > 10:
+            reward += -0.3
+        elif self.idle_steps >= 5:
             reward += self.rewards_config["idle_penalty"]
 
         if done and won:
@@ -90,7 +120,7 @@ class RewardCalculator:
 
     def reset(self, initial_map_state: MapState | None = None) -> None:
         """
-        Reset internal reward-tracking state for a new episode.
+        Reset reward-tracking state for a new episode.
 
         Args:
             initial_map_state (MapState | None): Optional initial map state.
@@ -99,13 +129,14 @@ class RewardCalculator:
         self.initial_map_state = initial_map_state
         self.idle_steps = 0
         self.episode_total = 0.0
+        self.step_counter = 0
 
     def get_episode_total(self) -> float:
         """
-        Return the cumulative reward collected during the current episode.
+        Return the accumulated reward for the current episode.
 
         Returns:
-            float: Current episode reward total.
+            float: Episode reward total.
         """
 
         return self.episode_total

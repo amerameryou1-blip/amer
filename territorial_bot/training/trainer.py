@@ -1,5 +1,5 @@
 """
-Single-worker training loop for Territorial.io bot.
+Single-worker Territorial.io training loop.
 """
 
 from __future__ import annotations
@@ -11,13 +11,13 @@ from typing import Any
 
 from playwright.sync_api import Error as PlaywrightError
 
-from vision.screenshot import ScreenshotCapture
 from utils.timer import GameTimer
+from vision.screenshot import ScreenshotCapture
 
 
 class Trainer:
     """
-    Run Territorial.io episodes and update the Q-learning agent.
+    Run Territorial.io episodes using screenshot-grounded state updates.
     """
 
     def __init__(
@@ -37,20 +37,20 @@ class Trainer:
         logger: logging.Logger | None = None,
     ) -> None:
         """
-        Initialize a training loop instance with all runtime dependencies.
+        Initialize the trainer.
 
         Args:
             config (dict[str, Any]): Project configuration dictionary.
             agent (Any): Q-learning agent.
             browser_manager (Any): Browser manager instance.
             game_launcher (Any): Game launcher instance.
-            game_controller (Any): Controller for mouse and keyboard actions.
-            map_parser (Any): Computer-vision map parser.
-            state_encoder (Any): State encoder instance.
-            reward_calculator (Any): Reward calculator instance.
-            episode_logger (Any): Episode logger instance.
-            worker_id (int): Worker identifier for logs and checkpoints.
-            training_enabled (bool): Whether Q-values should be updated.
+            game_controller (Any): Mouse and keyboard controller.
+            map_parser (Any): Screenshot map parser.
+            state_encoder (Any): Discrete state encoder.
+            reward_calculator (Any): Reward calculator.
+            episode_logger (Any): Episode logger.
+            worker_id (int): Worker identifier.
+            training_enabled (bool): Whether to update the Q-table.
             screenshot_capture (ScreenshotCapture | None): Optional screenshot capture helper.
             logger (logging.Logger | None): Optional logger instance.
         """
@@ -70,44 +70,59 @@ class Trainer:
         self.screenshot_capture = screenshot_capture or ScreenshotCapture(config, logger=self.logger)
         self.game_config = config["game"]
         self.agent_config = config["agent"]
-        self.restart_on_death = self.game_config["restart_on_death"]
-
-    def _capture_valid_frame(self, retries: int = 3) -> Any | None:
-        """
-        Capture a screenshot with limited retries to tolerate transient failures.
-
-        Args:
-            retries (int): Maximum number of attempts.
-
-        Returns:
-            Any | None: Captured BGR frame, or None if all attempts failed.
-        """
-
-        page = self.browser_manager.get_page()
-        for attempt in range(1, retries + 1):
-            frame = self.screenshot_capture.capture(page)
-            if frame is not None and frame.size > 0:
-                return frame
-            self.logger.warning("Screenshot capture returned blank frame on attempt %s/%s", attempt, retries)
-            time.sleep(0.2)
-        return None
+        self.debug_config = config.get("debug", {})
 
     def _refresh_page_binding(self) -> None:
         """
-        Refresh page-bound helpers after a browser restart.
+        Refresh helpers that hold a direct page reference.
         """
 
-        self.game_controller.set_page(self.browser_manager.get_page())
+        page = self.browser_manager.get_page()
+        self.game_controller.set_page(page)
+        if hasattr(self.game_launcher, "set_page"):
+            self.game_launcher.set_page(page)
+
+    def _capture_frame(self) -> Any | None:
+        """
+        Capture a screenshot from the active page.
+
+        Returns:
+            Any | None: Screenshot array or None on failure.
+        """
+
+        return self.screenshot_capture.capture(self.browser_manager.get_page())
+
+    def _save_debug_overlay(self, screenshot_bgr: Any, episode_number: int, step: int) -> None:
+        """
+        Save a debug overlay frame when debug vision is enabled.
+
+        Args:
+            screenshot_bgr (Any): Raw BGR screenshot.
+            episode_number (int): Episode number for naming.
+            step (int): Step number for naming.
+        """
+
+        overlay = self.map_parser.draw_debug_overlay(screenshot_bgr)
+        saved_path = self.screenshot_capture.save_debug_frame(overlay, episode_number, step)
+        self.logger.info("Saved debug overlay frame to %s", saved_path)
+
+    def _exit_to_menu(self) -> None:
+        """
+        Click the exit button to return to the main menu.
+        """
+
+        self.browser_manager.get_page().mouse.click(30, 748)
+        time.sleep(1.0)
 
     def save_q_table(self, path: str | Path | None = None) -> Path:
         """
-        Save the Q-table checkpoint with a backup fallback path on failure.
+        Save the Q-table checkpoint, falling back to a backup path on failure.
 
         Args:
-            path (str | Path | None): Optional override checkpoint path.
+            path (str | Path | None): Optional save path override.
 
         Returns:
-            Path: Path of the primary or backup checkpoint that was saved.
+            Path: Final checkpoint path that was written.
         """
 
         target_path = Path(path or self.agent_config["q_table_path"])
@@ -124,121 +139,163 @@ class Trainer:
 
     def run_episode(self) -> dict[str, Any]:
         """
-        Run a single training or evaluation episode.
+        Run one full Territorial.io episode from menu entry to cleanup.
 
         Returns:
-            dict[str, Any]: Episode statistics summary.
+            dict[str, Any]: Episode statistics, or an empty dict if startup failed.
         """
 
         self._refresh_page_binding()
-        self.game_launcher.handle_menu_state()
-        if not self.game_launcher.start_match():
-            raise RuntimeError("Failed to start a new Territorial.io match")
-
-        time.sleep(self.game_config["game_start_wait_s"])
-        episode_timer = GameTimer()
-        self.reward_calculator.reset()
         self.map_parser.reset()
-
-        initial_frame = self._capture_valid_frame(retries=5)
-        if initial_frame is None:
-            raise RuntimeError("Unable to capture initial frame for new episode")
-
-        current_map_state = self.map_parser.parse(initial_frame)
-        self.reward_calculator.reset(current_map_state)
-        current_state = self.state_encoder.encode(current_map_state)
-
-        total_steps = 0
+        self.reward_calculator.reset()
+        episode_step = 0
+        total_reward = 0.0
         done = False
-        won = False
+        timer = GameTimer()
+        episode_number = self.agent.episode_count + 1
 
-        for step in range(1, self.game_config["max_episode_steps"] + 1):
-            total_steps = step
-            self.game_controller.set_player_centroid(current_map_state.player_centroid)
+        if not self.game_launcher.navigate_to_game():
+            self.logger.warning("Episode %s aborted: failed to navigate to game", episode_number)
+            return {}
+        self.game_launcher.set_player_name(self.game_config["player_name"])
+        self.game_launcher.click_multiplayer()
+        if not self.game_launcher.wait_for_game_start():
+            self.logger.warning("Episode %s aborted: game start not detected", episode_number)
+            return {}
+
+        player_color_detected = False
+        for attempt in range(1, 6):
+            color_frame = self._capture_frame()
+            if color_frame is None:
+                time.sleep(1.0)
+                continue
+            if self.map_parser.detect_and_set_player_color(color_frame):
+                player_color_detected = True
+                break
+            self.logger.warning("Player color detection retry %s/5 failed", attempt)
+            time.sleep(1.0)
+
+        if not player_color_detected:
+            self.logger.error("Episode %s aborted: player color detection failed after 5 attempts", episode_number)
+            return {}
+
+        time.sleep(2.0)
+        screenshot = self._capture_frame()
+        if screenshot is None:
+            self.logger.warning("Episode %s aborted: missing initial screenshot", episode_number)
+            return {}
+
+        current_map_state = self.map_parser.parse(screenshot)
+        current_state = self.state_encoder.encode(current_map_state)
+        self.reward_calculator.reset(current_map_state)
+        self.logger.info(
+            "Startup summary | resume_episode=%s | player_color_hsv=%s | territory_pixels=%s",
+            episode_number,
+            current_map_state.player_color_hsv,
+            current_map_state.player_territory_pixels,
+        )
+
+        for step in range(self.game_config["max_episode_steps"]):
             action = self.agent.select_action(current_state)
-            action_x, action_y = self.game_controller.execute_action(action)
-
+            action_x, action_y = self.game_controller.execute_action(action, current_map_state)
             time.sleep(self.game_config["screenshot_interval_ms"] / 1000.0)
-            next_frame = self._capture_valid_frame()
-            if next_frame is None:
-                self.logger.warning("Skipping step %s because screenshot capture failed", step)
+
+            screenshot = self._capture_frame()
+            if screenshot is None:
                 continue
 
-            try:
-                done = self.game_launcher.detect_game_over()
-            except Exception:
-                done = False
-            won = self.game_launcher.detect_victory() if done else False
-
-            next_map_state = self.map_parser.parse(next_frame)
-            next_state = self.state_encoder.encode(next_map_state)
-            reward = self.reward_calculator.calculate(current_map_state, next_map_state, done, won)
+            done = self.game_launcher.detect_defeat(screenshot)
+            new_map_state = self.map_parser.parse(screenshot)
+            new_state = self.state_encoder.encode(new_map_state)
+            reward = self.reward_calculator.calculate(current_map_state, new_map_state, done, won=False)
 
             if self.training_enabled:
-                self.agent.update(current_state, action, reward, next_state, done)
+                self.agent.update(current_state, action, reward, new_state, done)
+
+            current_state = new_state
+            current_map_state = new_map_state
+            total_reward += reward
+            episode_step = step + 1
 
             self.episode_logger.log_step(
                 {
-                    "episode": self.agent.episode_count + 1,
+                    "episode": episode_number,
                     "worker_id": self.worker_id,
-                    "step": step,
+                    "step": episode_step,
                     "action_id": action,
                     "action_x": action_x,
                     "action_y": action_y,
                     "reward": reward,
+                    "territory_ratio": current_map_state.player_territory_ratio,
+                    "player_pixels": current_map_state.player_territory_pixels,
                     "done": done,
-                    "won": won,
-                    "territory_ratio": next_map_state.player_territory_ratio,
                 }
             )
 
-            current_map_state = next_map_state
-            current_state = next_state
+            if episode_step % 50 == 0:
+                self.logger.info(
+                    "Episode %s | step=%s | territory_ratio=%.4f | reward=%.3f | epsilon=%.4f",
+                    episode_number,
+                    episode_step,
+                    current_map_state.player_territory_ratio,
+                    reward,
+                    self.agent.epsilon,
+                )
+
+            if self.debug_config.get("save_screenshots") and episode_step % int(
+                self.debug_config.get("screenshot_every_n_steps", 100)
+            ) == 0:
+                self._save_debug_overlay(screenshot, episode_number, episode_step)
 
             if done:
+                self.logger.info("Episode %s ended by defeat at step %s", episode_number, episode_step)
                 break
 
-        total_reward = self.reward_calculator.get_episode_total()
-        final_ratio = current_map_state.player_territory_ratio
-        self.agent.complete_episode(total_reward, final_ratio, decay=self.training_enabled)
+        if done:
+            self.game_launcher.close_defeat_popup()
+        else:
+            self._exit_to_menu()
 
-        episode_number = self.agent.episode_count
-        if self.training_enabled and episode_number % self.agent_config["q_table_save_interval"] == 0:
+        self.agent.complete_episode(total_reward, current_map_state.player_territory_ratio, decay=False)
+        if self.training_enabled:
+            self.agent.decay_epsilon()
+
+        if self.training_enabled and self.agent.episode_count % self.agent_config["q_table_save_interval"] == 0:
             self.save_q_table()
 
         stats = {
-            "episode": episode_number,
+            "episode": self.agent.episode_count,
             "worker_id": self.worker_id,
-            "total_steps": total_steps,
+            "steps": episode_step,
+            "total_steps": episode_step,
             "total_reward": total_reward,
-            "final_territory_ratio": final_ratio,
+            "final_territory_ratio": current_map_state.player_territory_ratio,
+            "final_territory_pixels": current_map_state.player_territory_pixels,
             "epsilon": self.agent.epsilon,
-            "duration_seconds": episode_timer.elapsed_seconds(),
-            "won": won,
+            "player_color_hsv": current_map_state.player_color_hsv,
+            "duration_seconds": timer.elapsed_seconds(),
+            "won": False,
         }
         self.episode_logger.log_episode(stats)
-
-        if self.restart_on_death and (done or total_steps >= self.game_config["max_episode_steps"]):
-            self.browser_manager.restart()
-            self._refresh_page_binding()
-
         return stats
 
     def run(self, num_episodes: int) -> list[dict[str, Any]]:
         """
-        Run multiple episodes with crash recovery and checkpoint persistence.
+        Run multiple episodes with crash recovery.
 
         Args:
-            num_episodes (int): Number of episodes to execute.
+            num_episodes (int): Number of episodes to run.
 
         Returns:
-            list[dict[str, Any]]: Collected episode summaries.
+            list[dict[str, Any]]: Completed episode summaries.
         """
 
         episode_stats: list[dict[str, Any]] = []
         for _ in range(num_episodes):
             try:
                 stats = self.run_episode()
+                if not stats:
+                    continue
                 episode_stats.append(stats)
             except KeyboardInterrupt:
                 self.logger.warning("KeyboardInterrupt received; saving Q-table before exit")
