@@ -200,7 +200,7 @@ Position& Position::set(const Position& pos, StateInfo* si) {
 
 void Position::set_castling_right(Color c, Square rfrom) {
     Square kfrom = king_square(c);
-    CastlingRights cr = castling_rights(c, rfrom > kfrom);
+    CastlingRights cr = ::castling_rights(c, rfrom > kfrom);
     
     st->castlingRights |= cr;
     castlingRightsMask[kfrom] |= cr;
@@ -436,7 +436,7 @@ bool Position::pseudo_legal(const Move m) const {
         if (pc != make_piece(us, KING)) return false;
         // Direction check
         Square rto = to > from ? to + WEST : to + 2 * EAST;
-        return castling_rook_square(castling_rights(us, to > from)) == (to > from ? to + EAST : to + 2 * WEST)
+        return castling_rook_square(::castling_rights(us, to > from)) == (to > from ? to + EAST : to + 2 * WEST)
             || (to == (us == WHITE ? SQ_G1 : SQ_G8) || to == (us == WHITE ? SQ_C1 : SQ_C8));
     }
     
@@ -556,7 +556,7 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
         
         // Standard king target squares
         Square kTo = make_square(kingSide ? FILE_G : FILE_C, rank_of(from));
-        rfrom = castling_rook_square(castling_rights(us, kingSide));
+        rfrom = castling_rook_square(::castling_rights(us, kingSide));
         rto = make_square(kingSide ? FILE_F : FILE_D, rank_of(from));
         
         // Remove pieces
@@ -697,7 +697,7 @@ void Position::undo_move(Move m) {
     if (m.type() == CASTLING) {
         bool kingSide = to > from;
         Square kTo = make_square(kingSide ? FILE_G : FILE_C, rank_of(from));
-        Square rfrom = castling_rook_square(castling_rights(us, kingSide));
+        Square rfrom = castling_rook_square(::castling_rights(us, kingSide));
         Square rto = make_square(kingSide ? FILE_F : FILE_D, rank_of(from));
         
         // Remove pieces from castled positions

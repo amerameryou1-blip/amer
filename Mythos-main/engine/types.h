@@ -241,7 +241,7 @@ constexpr Color color_of(Piece pc) {
 }
 
 constexpr bool opposite_colors(Square s1, Square s2) {
-    return (s1 + rank_of(s1) + s2 + rank_of(s2)) & 1;
+    return (int(s1) + int(rank_of(s1)) + int(s2) + int(rank_of(s2))) & 1;
 }
 
 constexpr Square relative_square(Color c, Square s) {

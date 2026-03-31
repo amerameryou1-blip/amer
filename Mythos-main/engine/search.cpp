@@ -340,8 +340,8 @@ void Search::iterative_deepening(Position& pos) {
         
         // Aspiration windows
         if (depth >= 5) {
-            alpha = Value(std::max(int(prevScore - aspirationWindow), -int(VALUE_INFINITE)));
-            beta = Value(std::min(int(prevScore + aspirationWindow), int(VALUE_INFINITE)));
+            alpha = Value(std::max<int>(prevScore - aspirationWindow, -VALUE_INFINITE));
+            beta = Value(std::min<int>(prevScore + aspirationWindow, VALUE_INFINITE));
         } else {
             alpha = -VALUE_INFINITE;
             beta = VALUE_INFINITE;
@@ -674,7 +674,7 @@ Value Search::search(Position& pos, Value alpha, Value beta, int depth, int ply,
     Bound bound = bestValue >= beta ? BOUND_LOWER :
                   bestValue > origAlpha ? BOUND_EXACT : BOUND_UPPER;
     
-    tte->save(pos.key(), bestValue, bound, depth, bestMoveLocal, staticEval[ply], TT.generation);
+    tte->save(pos.key(), bestValue, bound, depth, bestMoveLocal, staticEval[ply], TT.current_generation());
     
     return bestValue;
 }
