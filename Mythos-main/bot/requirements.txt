@@ -1,0 +1,2 @@
+# Lichess bot dependencies
+berserk>=0.13.0
