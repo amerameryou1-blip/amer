@@ -1,0 +1,1 @@
+"""Mythos async Lichess bot."""

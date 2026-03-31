@@ -1,2 +1,2 @@
-# Lichess bot dependencies
-berserk>=0.13.0
+aiohttp>=3.9.5
+prometheus-client>=0.20.0
