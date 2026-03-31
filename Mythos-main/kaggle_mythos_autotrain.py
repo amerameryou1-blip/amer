@@ -824,7 +824,7 @@ def train_model(
     train_loader, val_loader = make_dataloaders(features, targets, batch_size=batch_size)
     optimizer = Lookahead(AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-2, betas=(0.9, 0.95)))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer.optimizer, T_max=max(1, epochs))
-    ema = ExponentialMovingAverage(model, decay=0.999, device="cpu")
+    ema = ExponentialMovingAverage(model, decay=0.999, device=str(device))
 
     model.to(device)
     start_val = evaluate_loss(model, val_loader, device, is_xla)
