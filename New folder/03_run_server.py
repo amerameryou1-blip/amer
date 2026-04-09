@@ -19,6 +19,7 @@ MODEL_PATH = MODELS_DIR / "google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
 SERVER_HINT_FILE = WORKDIR / "llama-server-path.txt"
 LOG_FILE = WORKDIR / "llama-server.log"
 PID_FILE = WORKDIR / "llama-server.pid"
+INPUT_ROOT = Path("/kaggle/input")
 HOST = "127.0.0.1"
 PORT = 8080
 HEALTH_URLS = [
@@ -57,6 +58,17 @@ def find_llama_server_binary() -> Path:
         ]
     )
 
+    if INPUT_ROOT.exists():
+        patterns = [
+            "*/bin/llama-server",
+            "*/llama-server",
+            "*/llama.cpp/build/bin/llama-server",
+            "*/llama.cpp/build/bin/Release/llama-server",
+        ]
+        for pattern in patterns:
+            for candidate in INPUT_ROOT.glob(pattern):
+                candidates.append(candidate)
+
     for candidate in candidates:
         if candidate and candidate.exists():
             return candidate
@@ -72,10 +84,41 @@ def get_optional_mmproj_path() -> Path | None:
         MODELS_DIR / "mmproj-google_gemma-4-26B-A4B-it-f16.gguf",
         MODELS_DIR / "mmproj-google_gemma-4-26B-A4B-it-bf16.gguf",
     ]
+    if INPUT_ROOT.exists():
+        for pattern in [
+            "*/models/mmproj-google_gemma-4-26B-A4B-it-f16.gguf",
+            "*/models/mmproj-google_gemma-4-26B-A4B-it-bf16.gguf",
+            "*/mmproj-google_gemma-4-26B-A4B-it-f16.gguf",
+            "*/mmproj-google_gemma-4-26B-A4B-it-bf16.gguf",
+        ]:
+            for candidate in INPUT_ROOT.glob(pattern):
+                candidates.append(candidate)
     for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
+
+
+def find_model_path() -> Path:
+    """Find the GGUF in working storage first, then attached Kaggle inputs."""
+    if MODEL_PATH.exists():
+        return MODEL_PATH
+
+    if INPUT_ROOT.exists():
+        patterns = [
+            "*/models/google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "*/google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        ]
+        for pattern in patterns:
+            for candidate in INPUT_ROOT.glob(pattern):
+                if candidate.exists():
+                    print(f"[OK] Using cached model from attached input: {candidate}")
+                    return candidate
+
+    raise FileNotFoundError(
+        f"Model file not found at {MODEL_PATH} and no cached input copy was found. "
+        "Run 02_download_model.py first."
+    )
 
 
 def is_server_ready() -> bool:
@@ -127,10 +170,11 @@ def stop_stale_process_if_needed() -> None:
 
 def build_command(server_binary: Path) -> list[str]:
     """Construct the exact llama-server command requested for Kaggle dual T4s."""
+    resolved_model_path = find_model_path()
     command = [
         str(server_binary),
         "--model",
-        str(MODEL_PATH),
+        str(resolved_model_path),
         "--host",
         HOST,
         "--port",
@@ -168,11 +212,6 @@ def build_command(server_binary: Path) -> list[str]:
 
 def launch_server() -> int:
     """Start llama-server as a detached subprocess and return its PID."""
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(
-            f"Model file not found at {MODEL_PATH}. Run 02_download_model.py first."
-        )
-
     server_binary = find_llama_server_binary()
     command = build_command(server_binary)
 

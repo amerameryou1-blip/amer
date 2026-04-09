@@ -26,6 +26,11 @@ FILES = [
     "05_github_uploader.py",
 ]
 
+print("[INFO] Cache behavior:")
+print("[INFO] 1) Reuse current-session files already in /kaggle/working")
+print("[INFO] 2) Reuse any attached Kaggle input dataset that already contains the model/server")
+print("[INFO] 3) Only download/build missing pieces")
+
 headers = {}
 try:
     from kaggle_secrets import UserSecretsClient

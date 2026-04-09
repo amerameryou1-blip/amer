@@ -19,11 +19,14 @@ from pathlib import Path
 
 
 WORKDIR = Path("/kaggle/working")
+CACHE_DIR = WORKDIR / ".cache"
+PIP_CACHE_DIR = CACHE_DIR / "pip"
 BIN_DIR = WORKDIR / "bin"
 LLAMA_CPP_DIR = WORKDIR / "llama.cpp"
 LLAMA_CPP_BUILD_DIR = LLAMA_CPP_DIR / "build"
 SERVER_HINT_FILE = WORKDIR / "llama-server-path.txt"
 CUDA_NVCC = Path("/usr/local/cuda/bin/nvcc")
+INPUT_ROOT = Path("/kaggle/input")
 
 
 def run_command(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
@@ -46,7 +49,6 @@ def bootstrap_build_tools() -> None:
             "pip",
             "install",
             "--upgrade",
-            "--no-cache-dir",
             "pip",
             "setuptools",
             "wheel",
@@ -100,7 +102,6 @@ def ensure_python_package(
         "pip",
         "install",
         "--upgrade",
-        "--no-cache-dir",
     ]
     if extra_args:
         command.extend(extra_args)
@@ -139,10 +140,15 @@ def install_required_python_packages() -> None:
 
 def build_llama_cpp_python() -> None:
     """Build llama-cpp-python from source with CUDA support enabled."""
+    if get_installed_version("llama-cpp-python") is not None:
+        print("[OK] llama-cpp-python is already installed; skipping rebuild.")
+        return
+
     env = {
         "CMAKE_ARGS": "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75",
         "FORCE_CMAKE": "1",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "PIP_CACHE_DIR": str(PIP_CACHE_DIR),
     }
     if CUDA_NVCC.exists():
         env["CUDACXX"] = str(CUDA_NVCC)
@@ -155,7 +161,6 @@ def build_llama_cpp_python() -> None:
             "install",
             "--upgrade",
             "--force-reinstall",
-            "--no-cache-dir",
             "--no-build-isolation",
             "--no-binary=llama-cpp-python",
             "llama-cpp-python[server]",
@@ -167,7 +172,6 @@ def build_llama_cpp_python() -> None:
             "install",
             "--upgrade",
             "--force-reinstall",
-            "--no-cache-dir",
             "--no-build-isolation",
             "--no-binary=llama-cpp-python",
             "llama-cpp-python",
@@ -210,8 +214,72 @@ def ensure_llama_cpp_checkout() -> None:
     )
 
 
+def link_or_copy(source: Path, destination: Path) -> Path:
+    """Link a file into the working directory, or copy if symlinks fail."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        return destination
+
+    try:
+        destination.symlink_to(source)
+        print(f"[OK] Symlinked {source} -> {destination}")
+    except OSError:
+        shutil.copy2(source, destination)
+        print(f"[OK] Copied {source} -> {destination}")
+    return destination
+
+
+def find_cached_llama_server() -> Path | None:
+    """Look for a previously saved llama-server binary in Kaggle inputs."""
+    if not INPUT_ROOT.exists():
+        return None
+
+    patterns = [
+        "*/bin/llama-server",
+        "*/llama-server",
+        "*/llama.cpp/build/bin/llama-server",
+        "*/llama.cpp/build/bin/Release/llama-server",
+    ]
+    for pattern in patterns:
+        for candidate in INPUT_ROOT.glob(pattern):
+            if candidate.exists():
+                print(f"[OK] Found cached llama-server in attached input: {candidate}")
+                return candidate
+    return None
+
+
+def restore_cached_llama_server() -> Path | None:
+    """Restore a cached llama-server binary into /kaggle/working/bin if available."""
+    hinted_path = None
+    if SERVER_HINT_FILE.exists():
+        hinted_path = Path(SERVER_HINT_FILE.read_text(encoding="utf-8").strip())
+        if hinted_path.exists():
+            print(f"[OK] Reusing existing working llama-server at {hinted_path}")
+            return hinted_path
+
+    existing_binary = BIN_DIR / "llama-server"
+    if existing_binary.exists():
+        SERVER_HINT_FILE.write_text(str(existing_binary), encoding="utf-8")
+        print(f"[OK] Reusing existing working llama-server at {existing_binary}")
+        return existing_binary
+
+    cached_binary = find_cached_llama_server()
+    if cached_binary is None:
+        return None
+
+    restored_binary = link_or_copy(cached_binary, BIN_DIR / "llama-server")
+    if not restored_binary.is_symlink():
+        restored_binary.chmod(0o755)
+    SERVER_HINT_FILE.write_text(str(restored_binary), encoding="utf-8")
+    return restored_binary
+
+
 def build_standalone_llama_server() -> Path:
     """Build the C++ llama-server binary with CUDA enabled."""
+    restored_binary = restore_cached_llama_server()
+    if restored_binary is not None:
+        return restored_binary
+
     cmake_configure = [
         "cmake",
         "-S",
@@ -282,7 +350,10 @@ def main() -> None:
     try:
         print("[INFO] Starting Kaggle setup install step...")
         WORKDIR.mkdir(parents=True, exist_ok=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        PIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        os.environ["PIP_CACHE_DIR"] = str(PIP_CACHE_DIR)
 
         bootstrap_build_tools()
         install_required_python_packages()
