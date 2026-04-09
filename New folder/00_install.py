@@ -138,6 +138,16 @@ def install_required_python_packages() -> None:
     ensure_python_package("sentencepiece", "sentencepiece")
 
 
+def install_llama_cpp_server_dependencies() -> None:
+    """Install the Python-side web server extras used by llama_cpp.server."""
+    ensure_python_package("uvicorn>=0.22.0", "uvicorn")
+    ensure_python_package("fastapi>=0.100.0", "fastapi")
+    ensure_python_package("pydantic-settings>=2.0.1", "pydantic-settings")
+    ensure_python_package("sse-starlette>=1.6.1", "sse-starlette")
+    ensure_python_package("starlette-context>=0.3.6,<0.4", "starlette-context")
+    ensure_python_package("PyYAML>=5.1", "PyYAML")
+
+
 def build_llama_cpp_python() -> None:
     """Build llama-cpp-python from source with CUDA support enabled."""
     if get_installed_version("llama-cpp-python") is not None:
@@ -188,12 +198,10 @@ def build_llama_cpp_python() -> None:
             last_error = exc
             print(f"[WARN] llama-cpp-python install attempt failed: {exc}")
 
-    # The standalone llama.cpp server is the actual runtime for this Kaggle setup.
-    # If the Python wheel keeps failing, we continue and rely on the source-built
-    # C++ server in the next steps.
-    print("[WARN] Continuing without llama-cpp-python because the standalone llama.cpp build is sufficient.")
-    if last_error:
-        print(f"[WARN] Last llama-cpp-python error: {last_error}")
+    raise RuntimeError(
+        "Failed to install llama-cpp-python with CUDA support. "
+        f"Last error: {last_error}"
+    )
 
 
 def ensure_llama_cpp_checkout() -> None:
@@ -358,8 +366,9 @@ def main() -> None:
         bootstrap_build_tools()
         install_required_python_packages()
         build_llama_cpp_python()
-        ensure_llama_cpp_checkout()
-        build_standalone_llama_server()
+        install_llama_cpp_server_dependencies()
+        print("[INFO] Skipping standalone llama.cpp server build on Kaggle.")
+        print("[INFO] Serving will use `python -m llama_cpp.server`, backed by the CUDA-built llama-cpp-python package.")
         print_runtime_summary()
         print("\n[SUCCESS] Installation and build steps completed.")
     except Exception as exc:

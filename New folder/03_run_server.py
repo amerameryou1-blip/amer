@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -19,6 +21,7 @@ MODEL_PATH = MODELS_DIR / "google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
 SERVER_HINT_FILE = WORKDIR / "llama-server-path.txt"
 LOG_FILE = WORKDIR / "llama-server.log"
 PID_FILE = WORKDIR / "llama-server.pid"
+SERVER_CONFIG_FILE = WORKDIR / "llama_cpp_server_config.json"
 INPUT_ROOT = Path("/kaggle/input")
 HOST = "127.0.0.1"
 PORT = 8080
@@ -210,10 +213,80 @@ def build_command(server_binary: Path) -> list[str]:
     return command
 
 
+def resolve_q4_0_cache_type() -> int:
+    """Resolve the runtime enum value for GGML q4_0 cache quantization."""
+    import llama_cpp
+
+    for attr_name in ("GGML_TYPE_Q4_0", "ggml_type_q4_0"):
+        if hasattr(llama_cpp, attr_name):
+            return int(getattr(llama_cpp, attr_name))
+
+    raise RuntimeError(
+        "Could not resolve GGML_TYPE_Q4_0 from llama_cpp. "
+        "The installed llama-cpp-python build may be incompatible."
+    )
+
+
+def build_python_server_command() -> list[str]:
+    """Build a llama_cpp.server command with a JSON config file."""
+    import llama_cpp
+
+    resolved_model_path = find_model_path()
+    q4_0_type = resolve_q4_0_cache_type()
+
+    config = {
+        "host": HOST,
+        "port": PORT,
+        "interrupt_requests": True,
+        "models": [
+            {
+                "model": str(resolved_model_path),
+                "model_alias": "google_gemma-4-26B-A4B-it-Q4_K_M",
+                "n_gpu_layers": -1,
+                "split_mode": int(llama_cpp.LLAMA_SPLIT_MODE_LAYER),
+                "tensor_split": [0.5, 0.5],
+                "n_ctx": 4096,
+                "n_batch": 512,
+                "n_ubatch": 512,
+                "offload_kqv": True,
+                "flash_attn": False,
+                "type_k": q4_0_type,
+                "type_v": q4_0_type,
+                "verbose": True,
+            }
+        ],
+    }
+
+    mmproj_path = get_optional_mmproj_path()
+    if mmproj_path is not None:
+        # llama-cpp-python's server uses clip_model_path for multimodal helpers.
+        config["models"][0]["clip_model_path"] = str(mmproj_path)
+        print(f"[INFO] Using mmproj/clip model file: {mmproj_path}")
+    else:
+        print("[INFO] No mmproj file found; starting in text-only mode.")
+
+    SERVER_CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    print(f"[INFO] Wrote server config to {SERVER_CONFIG_FILE}")
+
+    return [
+        sys.executable,
+        "-m",
+        "llama_cpp.server",
+        "--config_file",
+        str(SERVER_CONFIG_FILE),
+    ]
+
+
 def launch_server() -> int:
     """Start llama-server as a detached subprocess and return its PID."""
-    server_binary = find_llama_server_binary()
-    command = build_command(server_binary)
+    try:
+        server_binary = find_llama_server_binary()
+        command = build_command(server_binary)
+        print("[INFO] Using standalone llama-server binary.")
+    except Exception as binary_exc:
+        print(f"[WARN] Standalone llama-server unavailable: {binary_exc}")
+        print("[INFO] Falling back to python -m llama_cpp.server.")
+        command = build_python_server_command()
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0,1"
