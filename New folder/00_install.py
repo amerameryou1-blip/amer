@@ -71,7 +71,14 @@ def get_installed_version(package_name: str) -> str | None:
         return None
 
 
-def ensure_python_package(spec: str, package_name: str, minimum_version: str | None = None) -> None:
+def ensure_python_package(
+    spec: str,
+    package_name: str,
+    minimum_version: str | None = None,
+    *,
+    required: bool = True,
+    extra_args: list[str] | None = None,
+) -> None:
     """Install a package only when it is missing or below the required minimum."""
     if minimum_version:
         from packaging.version import Version
@@ -87,25 +94,39 @@ def ensure_python_package(spec: str, package_name: str, minimum_version: str | N
             return
 
     print(f"[INSTALL] {spec}")
-    run_command(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "--no-cache-dir",
-            spec,
-        ]
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "--no-cache-dir",
+    ]
+    if extra_args:
+        command.extend(extra_args)
+    command.append(spec)
+
+    try:
+        run_command(command)
+    except Exception:
+        if required:
+            raise
+        print(f"[WARN] Optional package install failed and will be skipped: {spec}")
 
 
 def install_required_python_packages() -> None:
     """Install the requested Python stack in a stable order."""
-    ensure_python_package("transformers>=5.5.0", "transformers", minimum_version="5.5.0")
+    ensure_python_package(
+        "transformers>=5.5.0",
+        "transformers",
+        minimum_version="5.5.0",
+        extra_args=["--pre"],
+    )
     ensure_python_package("torch", "torch")
     ensure_python_package("accelerate", "accelerate")
-    ensure_python_package("bitsandbytes", "bitsandbytes")
+    # bitsandbytes is not needed for the GGUF + llama.cpp path, so we do not let
+    # it kill the entire Kaggle setup if PyPI/build compatibility changes.
+    ensure_python_package("bitsandbytes", "bitsandbytes", required=False)
     ensure_python_package("pillow", "Pillow")
     ensure_python_package("timm", "timm")
     ensure_python_package("hf_transfer", "hf_transfer")
@@ -119,14 +140,14 @@ def install_required_python_packages() -> None:
 def build_llama_cpp_python() -> None:
     """Build llama-cpp-python from source with CUDA support enabled."""
     env = {
-        "CMAKE_ARGS": "-DGGML_CUDA=on",
+        "CMAKE_ARGS": "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75",
         "FORCE_CMAKE": "1",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
     }
     if CUDA_NVCC.exists():
         env["CUDACXX"] = str(CUDA_NVCC)
 
-    run_command(
+    install_commands = [
         [
             sys.executable,
             "-m",
@@ -135,11 +156,40 @@ def build_llama_cpp_python() -> None:
             "--upgrade",
             "--force-reinstall",
             "--no-cache-dir",
+            "--no-build-isolation",
             "--no-binary=llama-cpp-python",
             "llama-cpp-python[server]",
         ],
-        env=env,
-    )
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-build-isolation",
+            "--no-binary=llama-cpp-python",
+            "llama-cpp-python",
+        ],
+    ]
+
+    last_error: Exception | None = None
+    for command in install_commands:
+        try:
+            run_command(command, env=env)
+            print("[OK] llama-cpp-python installed successfully.")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"[WARN] llama-cpp-python install attempt failed: {exc}")
+
+    # The standalone llama.cpp server is the actual runtime for this Kaggle setup.
+    # If the Python wheel keeps failing, we continue and rely on the source-built
+    # C++ server in the next steps.
+    print("[WARN] Continuing without llama-cpp-python because the standalone llama.cpp build is sufficient.")
+    if last_error:
+        print(f"[WARN] Last llama-cpp-python error: {last_error}")
 
 
 def ensure_llama_cpp_checkout() -> None:
@@ -170,6 +220,8 @@ def build_standalone_llama_server() -> Path:
         str(LLAMA_CPP_BUILD_DIR),
         "-DGGML_CUDA=ON",
         "-DLLAMA_BUILD_SERVER=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DCMAKE_CUDA_ARCHITECTURES=75",
         "-DCMAKE_BUILD_TYPE=Release",
     ]
     cmake_build = [
